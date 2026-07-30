@@ -1,0 +1,179 @@
+// Prisma schema — Delivery 1 (foundation + auth + tenants + consumers).
+// Multi-tenancy: shared database, every tenant-scoped table carries `tenantId`
+// and is protected by Postgres Row-Level Security (see migration `*_rls`).
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+enum Role {
+  PLATFORM_ADMIN
+  TENANT_ADMIN
+  MANAGER
+  CASHIER
+  ATTENDANT
+  COOK
+  CONSUMER
+  DELIVERY
+}
+
+enum TenantStatus {
+  ACTIVE
+  SUSPENDED
+  CANCELLED
+}
+
+enum TenantPlan {
+  FREE
+  BASIC
+  PRO
+  ENTERPRISE
+}
+
+enum UserStatus {
+  ACTIVE
+  BLOCKED
+}
+
+/// A restaurant (tenant). Root of every isolation boundary.
+model Tenant {
+  id           String       @id @default(uuid()) @db.Uuid
+  slug         String       @unique
+  name         String
+  status       TenantStatus @default(ACTIVE)
+  plan         TenantPlan   @default(FREE)
+  hasMobileApp Boolean      @default(false)
+  createdAt    DateTime     @default(now())
+  updatedAt    DateTime     @updatedAt
+  deletedAt    DateTime?
+
+  users     User[]
+  consumers Consumer[]
+
+  @@index([status])
+  @@map("tenants")
+}
+
+/// Authentication identity. `tenantId` is null only for PLATFORM_ADMIN.
+model User {
+  id           String     @id @default(uuid()) @db.Uuid
+  tenantId     String?    @db.Uuid
+  email        String
+  passwordHash String
+  role         Role
+  status       UserStatus @default(ACTIVE)
+  createdAt    DateTime   @default(now())
+  updatedAt    DateTime   @updatedAt
+  deletedAt    DateTime?
+
+  tenant              Tenant?              @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  consumer            Consumer?
+  refreshTokens       RefreshToken[]
+  passwordResetTokens PasswordResetToken[]
+
+  // Email is unique per tenant (and among platform users where tenantId is null).
+  @@unique([tenantId, email])
+  @@index([tenantId])
+  @@map("users")
+}
+
+/// Customer profile of a restaurant. 1:1 with a CONSUMER-role User.
+model Consumer {
+  id        String    @id @default(uuid()) @db.Uuid
+  tenantId  String    @db.Uuid
+  userId    String    @unique @db.Uuid
+  name      String
+  phone     String
+  cpf       String?
+  createdAt DateTime  @default(now())
+  updatedAt DateTime  @updatedAt
+  deletedAt DateTime?
+
+  tenant    Tenant    @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  user      User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  addresses Address[]
+
+  @@index([tenantId])
+  @@map("consumers")
+}
+
+/// A delivery/location address of a consumer. Exactly one primary per consumer.
+model Address {
+  id         String   @id @default(uuid()) @db.Uuid
+  tenantId   String   @db.Uuid
+  consumerId String   @db.Uuid
+  label      String
+  cep        String
+  street     String
+  number     String
+  complement String?
+  district   String
+  city       String
+  state      String   @db.VarChar(2)
+  latitude   Float?
+  longitude  Float?
+  isPrimary  Boolean  @default(false)
+  createdAt  DateTime @default(now())
+  updatedAt  DateTime @updatedAt
+
+  consumer Consumer @relation(fields: [consumerId], references: [id], onDelete: Cascade)
+
+  @@index([tenantId])
+  @@index([consumerId])
+  @@map("addresses")
+}
+
+/// Hashed, rotatable refresh tokens (one row per issued token / session).
+/// The client token is `<id>.<secret>`; only a hash of the secret is stored, and
+/// `tenantId` lets the refresh flow re-establish tenant context without a header.
+model RefreshToken {
+  id        String    @id @default(uuid()) @db.Uuid
+  userId    String    @db.Uuid
+  tenantId  String?   @db.Uuid
+  tokenHash String
+  expiresAt DateTime
+  revokedAt DateTime?
+  createdAt DateTime  @default(now())
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@map("refresh_tokens")
+}
+
+/// Single-use, hashed password reset tokens. Client token is `<id>.<secret>`.
+model PasswordResetToken {
+  id        String    @id @default(uuid()) @db.Uuid
+  userId    String    @db.Uuid
+  tenantId  String?   @db.Uuid
+  tokenHash String
+  expiresAt DateTime
+  usedAt    DateTime?
+  createdAt DateTime  @default(now())
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@map("password_reset_tokens")
+}
+
+/// Append-only security/audit trail for sensitive actions.
+model AuditLog {
+  id          String   @id @default(uuid()) @db.Uuid
+  tenantId    String?  @db.Uuid
+  actorUserId String?  @db.Uuid
+  action      String
+  resource    String
+  metadata    Json?
+  ip          String?
+  createdAt   DateTime @default(now())
+
+  @@index([tenantId])
+  @@index([actorUserId])
+  @@map("audit_logs")
+}
