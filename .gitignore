@@ -1,0 +1,27 @@
+# dependencies
+/node_modules
+
+# build
+/dist
+*.tsbuildinfo
+
+# test
+/coverage
+
+# env & secrets
+.env
+.env.*
+!.env.example
+
+# logs
+*.log
+logs
+
+# editor / os
+.DS_Store
+.idea
+.vscode/*
+!.vscode/extensions.json
+
+# prisma
+prisma/*.db
