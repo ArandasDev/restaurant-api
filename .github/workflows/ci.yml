@@ -1,0 +1,74 @@
+name: CI
+
+on:
+  push:
+    branches: [main, development]
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: postgres
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+
+    env:
+      # The app connects as a NON-superuser without BYPASSRLS so Row-Level
+      # Security is actually enforced (and tested).
+      DATABASE_URL: postgresql://restaurant:restaurant@localhost:5432/restaurant_dev?schema=public
+      JWT_ACCESS_SECRET: ci-access-secret-0123456789-abcdefghij
+      JWT_REFRESH_SECRET: ci-refresh-secret-0123456789-abcdefghij
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Provision database role and schemas
+        env:
+          PGPASSWORD: postgres
+        run: |
+          psql -h localhost -U postgres -c "CREATE ROLE restaurant LOGIN PASSWORD 'restaurant' NOSUPERUSER NOCREATEDB NOBYPASSRLS;"
+          psql -h localhost -U postgres -c "CREATE DATABASE restaurant_dev OWNER restaurant;"
+          psql -h localhost -U postgres -c "CREATE DATABASE restaurant_test OWNER restaurant;"
+
+      - name: Generate Prisma client
+        run: npm run prisma:generate
+
+      - name: Apply migrations (dev + test)
+        run: |
+          npm run prisma:migrate
+          DATABASE_URL=postgresql://restaurant:restaurant@localhost:5432/restaurant_test?schema=public npm run prisma:migrate
+
+      - name: Lint
+        run: npm run lint
+
+      - name: Typecheck
+        run: npm run typecheck
+
+      - name: Unit tests + coverage
+        run: npm run test:cov
+
+      - name: E2E tests
+        run: npm run test:e2e
+
+      - name: Build
+        run: npm run build
